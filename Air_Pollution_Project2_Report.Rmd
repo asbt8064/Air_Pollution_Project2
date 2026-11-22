@@ -1,0 +1,333 @@
+---
+title: "Air Pollution Measurements in Durham County, North Carolina"
+author: "Zijie Zhang"
+date: "November 21, 2026"
+output:
+  word_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+
+
+library(tidyverse)
+library(lubridate)
+library(knitr)
+```
+
+# Introduction
+
+Air pollution is an important environmental and public health concern. This project describes daily measurements of carbon monoxide (CO), fine particulate matter (PM2.5), and ozone (O3) collected in the Raleigh-Durham area from 2018 through April 2020. The goals are to summarize the observed concentration ranges, examine monthly patterns, and compare PM2.5 distributions across the available years.
+
+The three pollutants are reported in different units: CO and O3 are measured in parts per million (ppm), while PM2.5 is measured in micrograms per cubic meter (µg/m³). Because these measurements use different units and have different numerical scales, CO and O3 are displayed in separate panels in the monthly trend plot.
+
+# Data and Methods
+
+## Importing the data
+
+The three CSV files are stored in a folder named `data` in the project directory. The files are imported below.
+
+```{r import-data}
+air_2018_raw <- read_csv("/Users/Zhangzijie/Downloads/Zhang_Zijie_Project2zip/AQ_2018.csv")
+air_2019_raw <- read_csv("/Users/Zhangzijie/Downloads/Zhang_Zijie_Project2zip/AQ_2019.csv")
+air_2020_raw <- read_csv("/Users/Zhangzijie/Downloads/Zhang_Zijie_Project2zip/AQ_2020.csv")
+
+data_dimensions <- tibble(
+  Year = c(2018, 2019, 2020),
+  Rows = c(nrow(air_2018_raw), nrow(air_2019_raw), nrow(air_2020_raw)),
+  Columns = c(ncol(air_2018_raw), ncol(air_2019_raw), ncol(air_2020_raw))
+)
+
+kable(data_dimensions, caption = "Dimensions of the original air pollution datasets.")
+```
+
+The original files contain 479 rows for 2018, 494 rows for 2019, and 179 rows for 2020. Multiple rows can refer to the same date, so the data need to be cleaned and summarized to obtain one record per day.
+
+## Data cleaning function
+
+The cleaning function below accepts a file path and an optional ozone unit. It removes exact duplicate rows, renames the pollutant columns, converts dates to Date format, changes negative pollutant measurements to zero, converts ozone from ppm to ppb when requested, and averages multiple measurements recorded on the same date. If all measurements for a pollutant on a date are missing, the daily value remains missing.
+
+```{r cleaning-function}
+clean_air_quality <- function(file_path, ozone_units = c("ppm", "ppb")) {
+  ozone_units <- match.arg(ozone_units)
+
+  air_data <- read_csv(file_path, show_col_types = FALSE) %>%
+    distinct() %>%
+    rename(
+      date = Date,
+      CO = `Daily Max 8-hour CO Concentration`,
+      PM25 = `Daily Mean PM2.5 Concentration`,
+      O3 = `Daily Max 8-hour Ozone Concentration`
+    ) %>%
+    mutate(date = mdy(date))
+
+  pollutant_names <- c("CO", "PM25", "O3")
+
+  for (pollutant in pollutant_names) {
+    air_data[[pollutant]][
+      !is.na(air_data[[pollutant]]) & air_data[[pollutant]] < 0
+    ] <- 0
+  }
+
+  if (ozone_units == "ppb") {
+    air_data <- air_data %>%
+      mutate(O3 = O3 * 1000)
+  }
+
+  air_clean <- air_data %>%
+    group_by(date) %>%
+     summarise(
+      across(
+        all_of(pollutant_names),
+        function(x) {
+          if (all(is.na(x))) {
+            return(NA_real_)
+          } else {
+            return(mean(x, na.rm = TRUE))
+          }
+        }
+      ),
+      .groups = "drop"
+    ) %>%
+    arrange(date)
+
+  return(air_clean)
+}
+```
+
+The exact duplicate rows are removed before averaging so that repeated copies of the same record do not receive extra weight. Rows with the same date but different measurements are retained and averaged because they may represent separate measurements from that day.
+
+## Cleaning and combining the datasets
+
+```{r clean-combine}
+air_2018 <- clean_air_quality("/Users/Zhangzijie/Downloads/Zhang_Zijie_Project2zip/AQ_2018.csv")
+air_2019 <- clean_air_quality("/Users/Zhangzijie/Downloads/Zhang_Zijie_Project2zip/AQ_2019.csv")
+air_2020 <- clean_air_quality("/Users/Zhangzijie/Downloads/Zhang_Zijie_Project2zip/AQ_2020.csv")
+
+air_all <- bind_rows(
+  air_2018,
+  air_2019,
+  air_2020
+) %>%
+  arrange(date) %>%
+  mutate(
+    year = factor(year(date)),
+    month_number = month(date),
+    month = factor(month_number, levels = 1:12, labels = month.abb)
+  )
+
+year_counts <- air_all %>%
+  count(year, name = "Daily records")
+
+kable(year_counts, caption = "Number of daily records available in each year.")
+```
+
+The cleaned data contain 847 daily records: 361 days in 2018, 365 days in 2019, and 121 days from January through April 2020. The 2020 dataset is therefore a partial-year dataset and should not be interpreted as representing all of 2020.
+
+## Data quality checks
+
+```{r quality-checks}
+quality_summary <- tibble(
+  Check = c(
+    "Duplicate dates after daily aggregation",
+    "Missing CO values",
+    "Missing PM2.5 values",
+    "Missing O3 values",
+    "Negative CO values after cleaning",
+    "Negative PM2.5 values after cleaning",
+    "Negative O3 values after cleaning"
+  ),
+  Result = c(
+    sum(duplicated(air_all$date)),
+    sum(is.na(air_all$CO)),
+    sum(is.na(air_all$PM25)),
+    sum(is.na(air_all$O3)),
+    sum(air_all$CO < 0, na.rm = TRUE),
+    sum(air_all$PM25 < 0, na.rm = TRUE),
+    sum(air_all$O3 < 0, na.rm = TRUE)
+  )
+)
+
+kable(quality_summary, caption = "Data quality checks after cleaning.")
+```
+
+After daily aggregation, there are no duplicate dates. Some pollutant values remain missing: 8 CO values, 24 PM2.5 values, and 12 O3 values. These missing values are retained rather than replaced with zero because a missing measurement is not evidence that the pollutant concentration was zero. All negative values are removed by the cleaning rule.
+
+# Results
+
+## Minimum and maximum daily concentrations by year
+
+The following tables show the minimum and maximum daily concentration for each pollutant and year. Values are rounded to three decimal places. The 2020 results cover January through April only.
+
+```{r annual-summary}
+annual_summary <- air_all %>%
+  group_by(year) %>%
+  summarise(
+    CO_Min = min(CO, na.rm = TRUE),
+    CO_Max = max(CO, na.rm = TRUE),
+    PM25_Min = min(PM25, na.rm = TRUE),
+    PM25_Max = max(PM25, na.rm = TRUE),
+    O3_Min = min(O3, na.rm = TRUE),
+    O3_Max = max(O3, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+annual_table <- annual_summary %>%
+  pivot_longer(
+    cols = -year,
+    names_to = c("Pollutant", "Measure"),
+    names_pattern = "(CO|PM25|O3)_(Min|Max)",
+    values_to = "Concentration"
+  ) %>%
+  mutate(
+    Pollutant = recode(
+      Pollutant,
+      CO = "CO (ppm)",
+      PM25 = "PM2.5 (µg/m³)",
+      O3 = "O3 (ppm)"
+    )
+  ) %>%
+  pivot_wider(names_from = Measure, values_from = Concentration) %>%
+  arrange(Pollutant, year) %>%
+  mutate(
+    Min = round(Min, 3),
+    Max = round(Max, 3)
+  )
+
+
+```
+```{r 2018}
+annual_table %>%
+  filter(year == "2018") %>%
+  select(Pollutant, Min, Max) %>%
+  kable(
+    col.names = c("Pollutant", "Minimum", "Maximum"),
+    caption = "Minimum and maximum daily pollutant concentrations in 2018."
+  )
+```
+```{r 2019}
+annual_table %>%
+  filter(year == "2019") %>%
+  select(Pollutant, Min, Max) %>%
+  kable(
+    col.names = c("Pollutant", "Minimum", "Maximum"),
+    caption = "Minimum and maximum daily pollutant concentrations in 2019."
+  )
+```
+
+```{r 2020}
+annual_table %>%
+  filter(year == "2020") %>%
+  select(Pollutant, Min, Max) %>%
+  kable(
+    col.names = c("Pollutant", "Minimum", "Maximum"),
+    caption = "Minimum and maximum daily pollutant concentrations from January through April 2020."
+  )
+```
+The largest observed CO concentration was 1.300 ppm in 2019. The largest O3 concentration was 0.068 ppm in 2019. The largest PM2.5 concentration was 31.200 µg/m³ in the January-April 2020 data. The minimum PM2.5 value in 2018 is zero because the original dataset contained one negative PM2.5 measurement (-0.5), which was set to zero according to the cleaning rule.
+
+## Monthly mean concentrations of CO and O3
+
+For each calendar month, daily observations from all available years were pooled. The monthly mean and 95% confidence interval were calculated using:
+
+bar{x} +/- 1.96 * (s/sqrt(n)),
+
+where bar{x} is the monthly mean, s is the standard deviation of the daily observations, and n is the number of non-missing daily observations for that pollutant and month.
+
+```{r monthly-co-o3}
+co_o3_long <- air_all %>%
+  select(date, month_number, CO, O3) %>%
+  pivot_longer(
+    cols = c(CO, O3),
+    names_to = "Pollutant",
+    values_to = "Concentration"
+  ) %>%
+  filter(!is.na(Concentration))
+
+monthly_co_o3 <- co_o3_long %>%
+  group_by(month_number, Pollutant) %>%
+  summarise(
+    n = n(),
+    mean_concentration = mean(Concentration),
+    sd_concentration = sd(Concentration),
+    se = sd_concentration / sqrt(n),
+    lower_ci = mean_concentration - 1.96 * se,
+    upper_ci = mean_concentration + 1.96 * se,
+    .groups = "drop"
+  ) %>%
+  mutate(month = factor(month_number, levels = 1:12, labels = month.abb))
+
+ggplot(
+  monthly_co_o3,
+  aes(x = month_number, y = mean_concentration, color = Pollutant, group = Pollutant)
+) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    width = 0.15,
+    linewidth = 0.5
+  ) +
+  facet_wrap(
+    ~ Pollutant,
+    scales = "free_y",
+    ncol = 1,
+    labeller = as_labeller(c(CO = "Carbon monoxide (ppm)", O3 = "Ozone (ppm)"))
+  ) +
+  scale_x_continuous(
+    breaks = 1:12,
+    labels = month.abb
+  ) +
+  labs(
+    title = "Monthly mean concentrations of CO and O3",
+    subtitle = "Daily observations pooled across the available years; error bars show 95% confidence intervals",
+    x = "Month",
+    y = "Mean daily concentration",
+    color = "Pollutant"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+Separate panels with independent y-axis scales are used because CO and O3 have different numerical ranges, making the monthly pattern of each pollutant easier to see. January through April include observations from all three years (2018, 2019, and 2020), while May through December include observations from 2018 and 2019 only.
+
+In the pooled data, mean CO was highest in December (0.513 ppm) and lowest in May and July (both approximately 0.255 ppm). Mean O3 was highest in June (0.0496 ppm) and lowest in December (0.0275 ppm). The monthly patterns differ: CO was generally higher in the colder months, while O3 was generally higher from spring through summer.
+
+## PM2.5 distributions by month and year
+
+Boxplots are appropriate because they show the median, interquartile range, overall spread, and unusually high or low observations, allowing the monthly distributions to be compared across years. The 2020 boxes are available only for January through April because those are the only months included in that file.
+
+```{r pm25-boxplot}
+ggplot(
+  air_all %>% filter(!is.na(PM25)),
+  aes(x = month, y = PM25, fill = year)
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    outlier.alpha = 0.55
+  ) +
+  scale_fill_manual(
+    values = c("2018" = "#4477AA", "2019" = "#EE9944", "2020" = "#228833")
+  ) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    title = "Daily PM2.5 concentrations by month and year",
+    x = "Month",
+    y = expression("PM2.5 concentration (" * mu * "g/m"^3 * ")"),
+    fill = "Year"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+```
+
+The PM2.5 distributions vary across both months and years. In the first four months, the 2020 monthly medians increased from approximately 4.7 µg/m³ in January to 8.4 µg/m³ in April. The 2020 data also contain the highest daily PM2.5 observation in the full dataset (31.2 µg/m³), which appears as a high value relative to the other observations. Because 2020 includes only four months, this plot does not support a full-year comparison between 2020 and the earlier years.
+
+## Overall Interpretation
+
+The data show different monthly patterns for CO and O3: CO had its highest pooled monthly mean in December, while O3 peaked in June. PM2.5 concentrations varied across months and years, with the highest daily observation reaching 31.2 µg/m³ in the January-April 2020 data. Because 2020 includes only four months, its results should not be interpreted as a full-year comparison with 2018 and 2019; these descriptive patterns also do not establish the causes of changes in pollutant concentrations.
+
+
+# AI Use Disclosure
+
+I used ChatGPT to help me find suitable library, correct my code mistakes, and help clarify my interpretation and conclusions. I checked its output by reviewing the code and comparing the tables and plots with the processed data.
